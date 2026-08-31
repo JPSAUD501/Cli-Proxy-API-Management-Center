@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -13,6 +13,11 @@ import {
   resolvePluginAssetURL,
 } from './pluginResources';
 import styles from './PluginResourcePage.module.scss';
+import {
+  createPluginManagementSession,
+  getSameOriginPluginTarget,
+  isPluginManagementSessionRequest,
+} from './pluginManagementSession';
 
 const hasStatus = (error: unknown, status: number) => isRecord(error) && error.status === status;
 
@@ -34,6 +39,8 @@ export function PluginResourcePage() {
   const params = useParams<{ pluginId: string; menuIndex: string }>();
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const apiBase = useAuthStore((state) => state.apiBase);
+  const managementKey = useAuthStore((state) => state.managementKey);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const [data, setData] = useState<PluginListResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -86,6 +93,36 @@ export function PluginResourcePage() {
   }, [data?.plugins, menuIndex, pluginID]);
 
   const iframeSrc = resource ? resolvePluginAssetURL(resource.menu.path, apiBase) : '';
+  const iframeOrigin = useMemo(
+    () => getSameOriginPluginTarget(iframeSrc, window.location.origin),
+    [iframeSrc]
+  );
+
+  const sendManagementSession = useCallback(() => {
+    const targetWindow = iframeRef.current?.contentWindow;
+    if (!targetWindow || !iframeOrigin || !managementKey) return;
+
+    targetWindow.postMessage(createPluginManagementSession(managementKey), iframeOrigin);
+  }, [iframeOrigin, managementKey]);
+
+  useEffect(() => {
+    if (!iframeOrigin) return;
+
+    const handleMessage = (event: MessageEvent<unknown>) => {
+      if (
+        event.origin !== iframeOrigin ||
+        event.source !== iframeRef.current?.contentWindow ||
+        !isPluginManagementSessionRequest(event.data)
+      ) {
+        return;
+      }
+
+      sendManagementSession();
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [iframeOrigin, sendManagementSession]);
 
   return (
     <div className={styles.page}>
@@ -113,11 +150,13 @@ export function PluginResourcePage() {
         </div>
       ) : (
         <iframe
+          ref={iframeRef}
           className={styles.frame}
           src={iframeSrc}
           title={resource.label}
           referrerPolicy="no-referrer"
           allow="clipboard-read; clipboard-write"
+          onLoad={sendManagementSession}
         />
       )}
     </div>
